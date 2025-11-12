@@ -5,7 +5,7 @@ Checks available time slots for padel courts in Utrecht.
 
 from playwright.sync_api import sync_playwright
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict
 import json
 import re
 
@@ -26,7 +26,8 @@ class PadelCasaScraper:
         self.date = date or datetime.now().strftime("%Y-%m-%d")
         self.playing_times = playing_times
         self.base_url = "https://www.padelcasa.com/pages/utrecht"
-        
+        self.time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
+    
     def build_url(self) -> str:
         """Build the booking URL with filters."""
         return (
@@ -36,6 +37,50 @@ class PadelCasaScraper:
             f"&playingTimes={self.playing_times}"
         )
     
+    def _handle_age_confirmation(self, page):
+        """Handle age confirmation dialog if present."""
+        for selector in ["text='Yes I am'", "button:has-text('Ja')"]:
+            try:
+                page.wait_for_selector(selector, timeout=3000)
+                page.click(selector)
+                print("Age confirmation handled")
+                return
+            except:
+                continue
+    
+    def _find_time_slots(self, page):
+        """Find all time slot buttons on the page."""
+        page.wait_for_selector(".timeslots-container", timeout=10000)
+        page.wait_for_timeout(2000)  # Wait for slots to render
+        
+        container = page.query_selector(".timeslots-container")
+        if container:
+            buttons = container.query_selector_all("button")
+            if buttons:
+                print(f"Found {len(buttons)} time slot buttons")
+                return buttons
+        
+        # Fallback if primary method fails
+        raise Exception("Could not find time slots. Check debug files.")
+    
+    def _is_slot_available(self, slot):
+        """Check if a time slot is available."""
+        time_div = slot.query_selector("div")
+        if not time_div:
+            return None, None
+        
+        time_text = time_div.inner_text().strip()
+        if not self.time_pattern.match(time_text):
+            return None, None
+        
+        # Available if: not disabled AND no strikethrough
+        is_disabled = slot.get_attribute("disabled") is not None
+        has_strikethrough = "text-decoration-line-through" in (time_div.get_attribute("class") or "")
+        has_disabled_class = "disabled" in (slot.get_attribute("class") or "")
+        
+        is_available = not is_disabled and not has_disabled_class and not has_strikethrough
+        return time_text, is_available
+    
     def scrape_availability(self) -> Dict:
         """
         Scrape court availability from the website.
@@ -44,7 +89,6 @@ class PadelCasaScraper:
             Dictionary containing available and booked time slots
         """
         with sync_playwright() as p:
-            # Launch browser (headless=False for debugging, set to True for production)
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
@@ -53,182 +97,27 @@ class PadelCasaScraper:
             page = context.new_page()
             
             try:
-                # Navigate to the booking page
-                url = self.build_url()
-                print(f"Navigating to: {url}")
-                page.goto(url, wait_until="networkidle", timeout=30000)
+                print(f"Navigating to: {self.build_url()}")
+                page.goto(self.build_url(), wait_until="networkidle", timeout=30000)
                 
-                # Wait for the age confirmation dialog and handle it if present
-                try:
-                    age_confirm_selectors = [
-                        "text='Yes I am'",
-                        "button:has-text('Yes I am')",
-                        "button:has-text('Ja')",  # Dutch version
-                        "[data-testid*='age']",
-                    ]
-                    for selector in age_confirm_selectors:
-                        try:
-                            page.wait_for_selector(selector, timeout=3000)
-                            page.click(selector)
-                            print("Age confirmation handled")
-                            break
-                        except:
-                            continue
-                except:
-                    print("No age confirmation dialog found")
-                
-                # Wait for page to be interactive
+                self._handle_age_confirmation(page)
                 page.wait_for_load_state("domcontentloaded")
-                page.wait_for_timeout(3000)  # Give JavaScript time to render
+                page.wait_for_timeout(3000)
                 
-                # Try to find the time slots section - be flexible with selectors
-                time_section_found = False
-                time_section_selectors = [
-                    "text='SELECTEER STARTTIJD'",
-                    "text='Selecteer starttijd'",
-                    "text='Selecteer Starttijd'",
-                    "[class*='starttijd']",
-                    "[class*='start-tijd']",
-                    "[class*='time-slot']",
-                    "[class*='timeslot']",
-                ]
-                
-                for selector in time_section_selectors:
-                    try:
-                        page.wait_for_selector(selector, timeout=5000)
-                        print(f"Found time section with selector: {selector}")
-                        time_section_found = True
-                        break
-                    except:
-                        continue
-                
-                if not time_section_found:
-                    print("Warning: Could not find time section header, proceeding anyway...")
-                    # Take a screenshot for debugging
-                    page.screenshot(path="debug_page_load.png")
-                    print("Screenshot saved to debug_page_load.png")
-                
-                # Wait for the timeslots container to be visible
-                try:
-                    page.wait_for_selector(".timeslots-container", timeout=10000)
-                    print("Timeslots container found")
-                except:
-                    print("Warning: .timeslots-container not found within timeout, proceeding anyway...")
-                
-                # Wait a bit more for all time slots to render
-                page.wait_for_timeout(2000)
-                
-                # Find all time slot buttons
-                # Based on the HTML structure: buttons are in .timeslots-container
-                # Available slots: button without disabled attribute, time div without text-decoration-line-through
-                # Booked slots: button with disabled attribute, time div with text-decoration-line-through class
-                
-                time_slots = []
-                time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
-                
-                print("Searching for time slot elements...")
-                
-                # Strategy 1: Look for .timeslots-container (most reliable based on HTML structure)
-                try:
-                    timeslots_container = page.query_selector(".timeslots-container")
-                    if timeslots_container:
-                        buttons = timeslots_container.query_selector_all("button")
-                        time_slots = buttons
-                        print(f"Found {len(time_slots)} time slot buttons in .timeslots-container")
-                    else:
-                        print("Warning: .timeslots-container not found, trying alternative methods...")
-                except Exception as e:
-                    print(f"Error finding .timeslots-container: {e}")
-                
-                # Strategy 2: Fallback - find buttons with time patterns
-                if len(time_slots) == 0:
-                    print("Trying alternative search methods...")
-                    all_buttons = page.query_selector_all("button.btn-outline-primary")
-                    for button in all_buttons:
-                        try:
-                            # Get the first div inside the button (contains the time)
-                            time_div = button.query_selector("div")
-                            if time_div:
-                                text = time_div.inner_text().strip()
-                                if time_pattern.match(text):
-                                    time_slots.append(button)
-                        except:
-                            continue
-                    print(f"Found {len(time_slots)} time slot buttons (alternative method)")
-                
-                # Strategy 3: Last resort - search all buttons
-                if len(time_slots) == 0:
-                    print("Trying comprehensive search...")
-                    all_buttons = page.query_selector_all("button")
-                    for button in all_buttons:
-                        try:
-                            # Check if button contains a time pattern
-                            text = button.inner_text().strip()
-                            # Extract just the time part (first line usually)
-                            first_line = text.split('\n')[0].strip()
-                            if time_pattern.match(first_line):
-                                time_slots.append(button)
-                        except:
-                            continue
-                    print(f"Found {len(time_slots)} time slot buttons (comprehensive search)")
-                
-                if len(time_slots) == 0:
-                    # Take a screenshot and save page HTML for debugging
-                    page.screenshot(path="debug_no_slots.png")
-                    html_content = page.content()
-                    with open("debug_page.html", "w", encoding="utf-8") as f:
-                        f.write(html_content)
-                    print("Debug files saved: debug_no_slots.png, debug_page.html")
-                    raise Exception("Could not find any time slots on the page. Check debug files.")
+                time_slots = self._find_time_slots(page)
                 
                 available_slots = []
                 booked_slots = []
                 
                 for slot in time_slots:
-                    try:
-                        # Extract time from the first div inside the button
-                        # The structure is: <button><div>08:00</div><hr><div>€36,00</div></button>
-                        time_div = slot.query_selector("div")
-                        if not time_div:
-                            continue
-                        
-                        time_text = time_div.inner_text().strip()
-                        
-                        # Check if it's a valid time format (HH:MM)
-                        if not time_pattern.match(time_text):
-                            continue
-                        
-                        # Check if the slot is available or booked
-                        # Based on HTML structure:
-                        # - Available: button without disabled attribute, time div without text-decoration-line-through class
-                        # - Booked: button with disabled attribute, time div with text-decoration-line-through class
-                        
-                        is_disabled = slot.get_attribute("disabled") is not None
-                        slot_classes = slot.get_attribute("class") or ""
-                        time_div_classes = time_div.get_attribute("class") or ""
-                        
-                        # Check for strikethrough class on the time div
-                        has_strikethrough_class = "text-decoration-line-through" in time_div_classes
-                        
-                        # Check if button has disabled class
-                        has_disabled_class = "disabled" in slot_classes
-                        
-                        # Available if: not disabled AND no strikethrough on time
-                        is_available = not is_disabled and not has_disabled_class and not has_strikethrough_class
-                        
+                    time_text, is_available = self._is_slot_available(slot)
+                    if time_text:
                         if is_available:
                             available_slots.append(time_text)
                         else:
                             booked_slots.append(time_text)
-                            
-                        print(f"Time slot {time_text}: {'Available' if is_available else 'Booked'}")
-                            
-                    except Exception as e:
-                        # Skip elements that don't match our criteria
-                        print(f"Error processing slot: {e}")
-                        continue
                 
-                result = {
+                return {
                     "location": self.location,
                     "date": self.date,
                     "playing_times": self.playing_times,
@@ -238,19 +127,12 @@ class PadelCasaScraper:
                     "total_booked": len(booked_slots)
                 }
                 
-                return result
-                
             except Exception as e:
                 print(f"Error during scraping: {e}")
-                # Take a screenshot for debugging
                 page.screenshot(path="error_screenshot.png")
                 raise
             finally:
                 browser.close()
-    
-    def get_availability(self) -> Dict:
-        """Convenience method to get availability."""
-        return self.scrape_availability()
 
 
 def main():
@@ -272,7 +154,7 @@ def main():
     )
     
     print(f"Scraping availability for {args.location} on {args.date or 'today'} ({args.playing_times} minutes)")
-    result = scraper.get_availability()
+    result = scraper.scrape_availability()
     
     # Print results
     print("\n" + "="*50)
@@ -295,11 +177,9 @@ def main():
             json.dump(result, f, indent=2, ensure_ascii=False)
         print(f"\nResults saved to {args.output}")
     else:
-        # Print JSON to stdout
         print("\nJSON Output:")
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     main()
-
