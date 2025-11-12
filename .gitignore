@@ -1,0 +1,4 @@
+# Environment variables file containing login credentials
+.env
+__pycache__/
+.pytest_cache
