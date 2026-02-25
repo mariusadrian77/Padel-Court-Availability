@@ -1,0 +1,19 @@
+check_interval_minutes: 5
+playing_times: 90
+
+ntfy_topic: "padel-your-topic-here"
+# ntfy_server: "https://ntfy.sh"  # default; change if self-hosting
+
+watches:
+  - clubs: ["peakz-vechtsebanen", "peakz-zeehaenkade", "padelcasa"]
+    weekday: "tuesday"
+    time_from: "18:00"
+    time_to: "19:00"
+    weeks_ahead: 4
+
+  # Add more watches as needed:
+  # - clubs: ["padelcasa"]
+  #   weekday: "thursday"
+  #   time_from: "20:00"
+  #   time_to: "21:00"
+  #   weeks_ahead: 2
