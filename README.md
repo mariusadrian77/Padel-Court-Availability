@@ -1,12 +1,21 @@
 # Padel Court Availability Scraper
 
-A web scraper for checking padel court availability on [PadelCasa Utrecht](https://www.padelcasa.com/pages/utrecht).
+A web scraper for checking padel court availability across multiple clubs in Utrecht.
+
+## Supported Clubs
+
+| Key | Club | Website |
+|-----|------|---------|
+| `padelcasa` | PadelCasa Utrecht | [padelcasa.com](https://www.padelcasa.com/pages/utrecht) |
+| `peakz-vechtsebanen` | Peakz Padel Vechtsebanen | [peakzpadel.nl](https://www.peakzpadel.nl/reserveren/court-booking/reservation?location=vechtsebanen) |
+| `peakz-zeehaenkade` | Peakz Padel Zeehaenkade | [peakzpadel.nl](https://www.peakzpadel.nl/reserveren/court-booking/reservation?location=Zeehaenkade) |
 
 ## Features
 
 - Scrapes court availability for specific dates and durations
+- Supports multiple clubs in a single run
 - Identifies available vs booked time slots
-- Supports custom filters (location, date, playing duration)
+- Gracefully handles failures per club (one failing won't stop the rest)
 - Outputs results in JSON format
 
 ## Installation
@@ -25,30 +34,34 @@ A web scraper for checking padel court availability on [PadelCasa Utrecht](https
 
 ## Usage
 
-### Basic Usage
+### Scrape All Clubs
 
-Check availability for today with default settings (Utrecht, 90 minutes):
+Check availability across all supported clubs for today (90 minutes):
 ```bash
 python scraper.py
 ```
 
-### Custom Date and Filters
+### Scrape Specific Clubs
 
-Check availability for a specific date:
+Scrape only the Peakz locations:
 ```bash
-python scraper.py --date 2025-11-19 --playing-times 90
+python scraper.py --club peakz-vechtsebanen peakz-zeehaenkade --date 2026-02-25
+```
+
+Scrape only PadelCasa:
+```bash
+python scraper.py --club padelcasa --date 2026-02-25
 ```
 
 ### Save Results to File
 
-Save results to a JSON file:
 ```bash
-python scraper.py --date 2025-11-19 --output results.json
+python scraper.py --date 2026-02-25 --output results.json
 ```
 
 ### Command Line Options
 
-- `--location`: Location name (default: "Utrecht")
+- `--club`: Club(s) to scrape (default: `all`). Available: `padelcasa`, `peakz-vechtsebanen`, `peakz-zeehaenkade`, `all`
 - `--date`: Date in YYYY-MM-DD format (default: today)
 - `--playing-times`: Playing duration in minutes (default: 90)
 - `--output`: Output JSON file path (optional)
@@ -56,69 +69,86 @@ python scraper.py --date 2025-11-19 --output results.json
 ### Example Output
 
 ```
+Scraping 3 club(s) for 2026-02-25 (90 min)
+
+============================================================
 AVAILABILITY RESULTS
-==================================================
-Location: Utrecht
-Date: 2025-11-19
-Duration: 90 minutes
+============================================================
 
-Available slots (8):
-  ✓ 08:00
-  ✓ 08:30
-  ✓ 09:00
-  ✓ 09:30
-  ✓ 10:00
-  ✓ 10:30
-  ✓ 11:30
-  ✓ 14:30
+  Club: PadelCasa Utrecht
+  Date: 2026-02-25
+  Duration: 90 minutes
 
-Booked slots (15):
-  ✗ 11:00
-  ✗ 12:00
-  ✗ 12:30
-  ✗ 13:00
-  ...
-==================================================
+  Available slots (8):
+    ✓ 08:00
+    ✓ 08:30
+    ✓ 09:00
+    ...
+
+  Booked slots (15):
+    ✗ 11:00
+    ✗ 12:00
+    ...
+
+  ----------------------------------------
+
+  Club: Peakz Padel Vechtsebanen
+  Date: 2026-02-25
+  Duration: 90 minutes
+
+  Available slots (5):
+    ✓ 09:00
+    ✓ 09:30
+    ...
+
+  ----------------------------------------
+============================================================
 ```
 
 ## How It Works
 
 The scraper uses Playwright to:
-1. Navigate to the PadelCasa booking page with the specified filters
+1. Navigate to each club's booking page with the specified filters
 2. Wait for the page to fully load (including JavaScript rendering)
-3. Find all time slot elements in the "SELECTEER STARTTIJD" section
-4. Determine availability by checking:
-   - Visual indicators (opacity, color, strikethrough)
-   - CSS classes
-   - Disabled state
-   - Cursor style
-
-Available slots are identified as those that are:
-- Not disabled
-- Not greyed out
-- Not cut/strikethrough
-- Have normal opacity and pointer cursor
+3. Handle any confirmation dialogs (e.g. age confirmation on PadelCasa)
+4. Find all time slot buttons in the `.timeslots-container` element
+5. Determine availability by checking the disabled state, CSS classes, and strikethrough styling
 
 ## Using as a Python Module
 
-You can also import and use the scraper in your own Python code:
+```python
+from scraper import PadelScraper, scrape_all
+
+# Scrape a single club
+scraper = PadelScraper(club="peakz-vechtsebanen", date="2026-02-25", playing_times=90)
+result = scraper.scrape_availability()
+print(f"Available: {result['available_slots']}")
+
+# Scrape multiple clubs
+results = scrape_all(
+    clubs=["padelcasa", "peakz-vechtsebanen", "peakz-zeehaenkade"],
+    date="2026-02-25",
+    playing_times=90,
+)
+for r in results:
+    print(f"{r['club']}: {r['total_available']} available")
+```
+
+## Adding a New Club
+
+To add another club that uses the same booking widget, add an entry to the `CLUBS` dictionary in `scraper.py`:
 
 ```python
-from scraper import PadelCasaScraper
-
-# Create scraper instance
-scraper = PadelCasaScraper(
-    location="Utrecht",
-    date="2025-11-19",
-    playing_times=90
-)
-
-# Get availability
-results = scraper.get_availability()
-
-# Access results
-print(f"Available slots: {results['available_slots']}")
-print(f"Booked slots: {results['booked_slots']}")
+CLUBS = {
+    ...
+    "new-club": {
+        "name": "New Club Name",
+        "base_url": "https://www.example.com/booking",
+        "location": "location-param",
+        "url_template": "{base_url}/court-booking/reservation?date={date}&location={location}",
+        "age_confirmation": False,
+    },
+}
 ```
 
 ## Requirements
@@ -128,5 +158,6 @@ All dependencies are listed in `requirements.txt` and have been installed in the
 ## Notes
 
 - The scraper runs in headless mode by default. To debug, change `headless=True` to `headless=False` in `scraper.py`
-- The website may require age confirmation - the scraper handles this automatically
-- Network timeouts are set to 30 seconds - adjust if needed for slower connections
+- PadelCasa may show an age confirmation dialog — the scraper handles this automatically
+- Network timeouts are set to 30 seconds — adjust if needed for slower connections
+- If a club fails to scrape, the error is captured and the remaining clubs continue

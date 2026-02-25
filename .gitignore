@@ -41,7 +41,7 @@ ENV/
 Thumbs.db
 
 # Project specific
-error_screenshot.png
+error_*.png
 debug_*.png
 debug_*.html
 *.json
