@@ -1,0 +1,18 @@
+check_interval_minutes: 15
+playing_times: 90
+
+ntfy_topic: "padel-monitor-utrecht-marius"
+# ntfy_server: "https://ntfy.sh"  # default; change if self-hosting
+
+watches:
+  - clubs: ["peakz-vechtsebanen", "peakz-zeehaenkade"]
+    weekday: "tuesday"
+    time_from: "18:00"
+    time_to: "19:00"
+    weeks_ahead: 5
+
+  - clubs: ["padelcasa"]
+    weekday: "tuesday"
+    time_from: "18:00"
+    time_to: "19:00"
+    weeks_ahead: 3
