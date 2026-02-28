@@ -1,6 +1,8 @@
 """Push notifications via ntfy.sh."""
 
 import logging
+from typing import Optional
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -14,8 +16,8 @@ def send_notification(
     message: str,
     server: str = DEFAULT_SERVER,
     priority: str = "high",
-    tags: str = "tennis",
-    click_url: str = None,
+    tags: str = "racquet",
+    click_url: Optional[str] = None,
 ):
     headers = {
         "Title": title.encode("utf-8"),

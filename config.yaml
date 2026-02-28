@@ -9,7 +9,7 @@ watches:
     weekday: "tuesday"
     time_from: "18:00"
     time_to: "19:00"
-    weeks_ahead: 5
+    weeks_ahead: 4
 
   - clubs: ["padelcasa"]
     weekday: "tuesday"

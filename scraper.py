@@ -3,11 +3,16 @@ Web scraper for padel court availability.
 Supports PadelCasa Utrecht, Peakz Padel Vechtsebanen, and Peakz Padel Zeehaenkade.
 """
 
-from playwright.sync_api import sync_playwright
-from datetime import datetime
-from typing import Dict, List
+import argparse
 import json
+import logging
 import re
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from playwright.sync_api import Browser, sync_playwright
+
+logger = logging.getLogger(__name__)
 
 
 CLUBS = {
@@ -18,6 +23,7 @@ CLUBS = {
         "url_template": "{base_url}#/court-booking/reservation?location={location}&date={date}&playingTimes={playing_times}",
         "age_confirmation": True,
         "court_type": None,
+        "has_filters": False,
     },
     "peakz-vechtsebanen": {
         "name": "Peakz Padel Vechtsebanen",
@@ -26,6 +32,7 @@ CLUBS = {
         "url_template": "{base_url}/court-booking/reservation?daypart=---&date={date}&location={location}",
         "age_confirmation": False,
         "court_type": "Double court indoor",
+        "has_filters": True,
     },
     "peakz-zeehaenkade": {
         "name": "Peakz Padel Zeehaenkade",
@@ -34,8 +41,11 @@ CLUBS = {
         "url_template": "{base_url}/court-booking/reservation?daypart=---&date={date}&location={location}",
         "age_confirmation": False,
         "court_type": "Double court indoor",
+        "has_filters": True,
     },
 }
+
+TIME_PATTERN = re.compile(r'^\d{1,2}:\d{2}$')
 
 
 class PadelScraper:
@@ -53,9 +63,9 @@ class PadelScraper:
         self.url_template = config["url_template"]
         self.age_confirmation = config["age_confirmation"]
         self.court_type = config.get("court_type")
+        self.has_filters = config.get("has_filters", False)
         self.date = date or datetime.now().strftime("%Y-%m-%d")
         self.playing_times = playing_times
-        self.time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
 
     def build_url(self) -> str:
         return self.url_template.format(
@@ -72,119 +82,131 @@ class PadelScraper:
             try:
                 page.wait_for_selector(selector, timeout=3000)
                 page.click(selector)
-                print("Age confirmation handled")
+                logger.debug("Age confirmation handled")
                 return
-            except:
+            except Exception:
                 continue
 
-    def _select_court_type(self, page):
-        if not self.court_type:
-            return
+    def _select_filter(self, page, filter_label: str, option_text: str):
         try:
-            multiselect = page.locator(".multiselect").filter(has_text="Type baan")
+            multiselect = page.locator(".multiselect").filter(has_text=filter_label)
             multiselect.click()
-            page.wait_for_timeout(500)
-            option = page.locator(f".multiselect__option:has-text('{self.court_type}')")
+            page.wait_for_timeout(300)
+            option = page.locator(f".multiselect__option:has-text('{option_text}')")
             option.click()
             page.wait_for_timeout(2000)
-            print(f"Court type filter set: {self.court_type}")
+            logger.debug(f"Filter '{filter_label}' set to: {option_text}")
         except Exception as e:
-            print(f"Warning: could not set court type filter: {e}")
+            logger.warning(f"Could not set filter '{filter_label}' to '{option_text}': {e}")
 
-    def _find_time_slots(self, page):
+    def _apply_filters(self, page):
+        if not self.has_filters:
+            return
+        if self.court_type:
+            self._select_filter(page, "Type baan", self.court_type)
+        self._select_filter(page, "Speeltijd", f"{self.playing_times} min")
+
+    def _wait_for_slots(self, page):
         page.wait_for_selector(".timeslots-container", timeout=15000)
-        page.wait_for_timeout(2000)
+        page.locator(".timeslots-container button").first.wait_for(timeout=5000)
 
+    def _read_time_slots(self, page) -> tuple[list[str], list[str]]:
         container = page.query_selector(".timeslots-container")
-        if container:
-            buttons = container.query_selector_all("button")
-            if buttons:
-                print(f"Found {len(buttons)} time slot buttons")
-                return buttons
+        if not container:
+            raise Exception("Could not find time slots container.")
 
-        raise Exception("Could not find time slots. Check debug files.")
+        buttons = container.query_selector_all("button")
+        logger.debug(f"Found {len(buttons)} time slot buttons")
 
-    def _is_slot_available(self, slot):
-        time_div = slot.query_selector("div")
-        if not time_div:
-            return None, None
+        available_slots = []
+        booked_slots = []
 
-        time_text = time_div.inner_text().strip()
-        if not self.time_pattern.match(time_text):
-            return None, None
+        for slot in buttons:
+            time_div = slot.query_selector("div")
+            if not time_div:
+                continue
+            time_text = time_div.inner_text().strip()
+            if not TIME_PATTERN.match(time_text):
+                continue
 
-        is_disabled = slot.get_attribute("disabled") is not None
-        has_strikethrough = "text-decoration-line-through" in (time_div.get_attribute("class") or "")
-        has_disabled_class = "disabled" in (slot.get_attribute("class") or "")
+            is_disabled = slot.get_attribute("disabled") is not None
+            has_strikethrough = "text-decoration-line-through" in (time_div.get_attribute("class") or "")
+            has_disabled_class = "disabled" in (slot.get_attribute("class") or "")
 
-        is_available = not is_disabled and not has_disabled_class and not has_strikethrough
-        return time_text, is_available
+            if not is_disabled and not has_disabled_class and not has_strikethrough:
+                available_slots.append(time_text)
+            else:
+                booked_slots.append(time_text)
 
-    def scrape_availability(self) -> Dict:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            )
-            page = context.new_page()
+        return sorted(available_slots), sorted(booked_slots)
 
+    def scrape_availability(self, browser: Optional[Browser] = None) -> Dict:
+        owns_browser = browser is None
+        pw_context = None
+
+        if owns_browser:
+            pw_context = sync_playwright().start()
+            browser = pw_context.chromium.launch(headless=True)
+
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+        page = context.new_page()
+
+        try:
+            url = self.build_url()
+            logger.info(f"Scraping {self.club_name} for {self.date}")
+            page.goto(url, wait_until="networkidle", timeout=30000)
+
+            self._handle_age_confirmation(page)
+            self._wait_for_slots(page)
+
+            self._apply_filters(page)
+
+            available_slots, booked_slots = self._read_time_slots(page)
+
+            return {
+                "club": self.club_name,
+                "location": self.location,
+                "date": self.date,
+                "playing_times": self.playing_times,
+                "available_slots": available_slots,
+                "booked_slots": booked_slots,
+                "total_available": len(available_slots),
+                "total_booked": len(booked_slots),
+            }
+
+        except Exception as e:
+            logger.error(f"Error scraping {self.club_name}: {e}")
             try:
-                url = self.build_url()
-                print(f"Navigating to: {url}")
-                page.goto(url, wait_until="networkidle", timeout=30000)
-
-                self._handle_age_confirmation(page)
-                page.wait_for_load_state("domcontentloaded")
-                page.wait_for_timeout(3000)
-
-                self._select_court_type(page)
-
-                time_slots = self._find_time_slots(page)
-
-                available_slots = []
-                booked_slots = []
-
-                for slot in time_slots:
-                    time_text, is_available = self._is_slot_available(slot)
-                    if time_text:
-                        if is_available:
-                            available_slots.append(time_text)
-                        else:
-                            booked_slots.append(time_text)
-
-                return {
-                    "club": self.club_name,
-                    "location": self.location,
-                    "date": self.date,
-                    "playing_times": self.playing_times,
-                    "available_slots": sorted(available_slots),
-                    "booked_slots": sorted(booked_slots),
-                    "total_available": len(available_slots),
-                    "total_booked": len(booked_slots),
-                }
-
-            except Exception as e:
-                print(f"Error scraping {self.club_name}: {e}")
                 page.screenshot(path=f"error_{self.club_key}.png")
-                raise
-            finally:
+            except Exception:
+                pass
+            raise
+        finally:
+            context.close()
+            if owns_browser:
                 browser.close()
+                if pw_context:
+                    pw_context.stop()
 
 
 def scrape_all(clubs: List[str], date: str = None, playing_times: int = 90) -> List[Dict]:
-    """Scrape availability for multiple clubs."""
+    """Scrape availability for multiple clubs, reusing a single browser instance."""
     results = []
-    for club in clubs:
-        print(f"\n{'='*50}")
-        print(f"Scraping: {CLUBS[club]['name']}")
-        print(f"{'='*50}")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
         try:
-            scraper = PadelScraper(club=club, date=date, playing_times=playing_times)
-            results.append(scraper.scrape_availability())
-        except Exception as e:
-            print(f"Failed to scrape {club}: {e}")
-            results.append({"club": CLUBS[club]["name"], "error": str(e)})
+            for club in clubs:
+                try:
+                    scraper = PadelScraper(club=club, date=date, playing_times=playing_times)
+                    results.append(scraper.scrape_availability(browser=browser))
+                except Exception as e:
+                    logger.error(f"Failed to scrape {club}: {e}")
+                    results.append({"club": CLUBS[club]["name"], "error": str(e)})
+        finally:
+            browser.close()
     return results
 
 
@@ -206,7 +228,7 @@ def print_results(result: Dict):
 
 
 def main():
-    import argparse
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     club_names = ", ".join(CLUBS.keys())
     parser = argparse.ArgumentParser(description="Scrape padel court availability")

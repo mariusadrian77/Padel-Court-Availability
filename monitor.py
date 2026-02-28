@@ -6,12 +6,13 @@ and sends push notifications via ntfy.sh.
 import json
 import logging
 import os
-import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
+
+from playwright.sync_api import sync_playwright
 
 from notify import send_notification
 from scraper import CLUBS, PadelScraper
@@ -75,8 +76,6 @@ def upcoming_dates(weekday_name: str, weeks_ahead: int) -> list[str]:
     target = WEEKDAYS[weekday_name.lower()]
     today = datetime.now().date()
     days_until = (target - today.weekday()) % 7
-    if days_until == 0:
-        days_until = 0  # include today if it matches
     first = today + timedelta(days=days_until)
 
     dates = []
@@ -92,18 +91,18 @@ def slot_in_window(slot_time: str, time_from: str, time_to: str) -> bool:
     return time_from <= slot_time <= time_to
 
 
-def build_booking_url(club_key: str, date: str) -> str:
+def build_booking_url(club_key: str, date: str, playing_times: int = 90) -> str:
     """Build a direct booking URL for a club + date."""
     config = CLUBS[club_key]
     return config["url_template"].format(
         base_url=config["base_url"],
         location=config["location"],
         date=date,
-        playing_times=90,
+        playing_times=playing_times,
     )
 
 
-def run_check(cfg: dict, state: dict) -> dict:
+def run_check(cfg: dict, state: dict, browser=None) -> dict:
     """Run one check cycle across all watches. Returns updated state."""
     ntfy_topic = cfg["ntfy_topic"]
     ntfy_server = cfg.get("ntfy_server", "https://ntfy.sh")
@@ -123,14 +122,19 @@ def run_check(cfg: dict, state: dict) -> dict:
         )
 
         for club in clubs:
-            for date in dates:
+            for i, date in enumerate(dates):
+                if i > 0:
+                    time.sleep(2)
                 state_key = f"{club}|{date}"
 
                 try:
                     scraper = PadelScraper(club=club, date=date, playing_times=playing_times)
-                    result = scraper.scrape_availability()
+                    result = scraper.scrape_availability(browser=browser)
                 except Exception as e:
-                    logger.error(f"Failed to scrape {club} for {date}: {e}")
+                    if "Timeout" in str(e):
+                        logger.warning(f"{CLUBS[club]['name']} on {date}: page timed out (date may not be bookable yet)")
+                    else:
+                        logger.error(f"Failed to scrape {club} for {date}: {e}")
                     continue
 
                 matching = [
@@ -138,12 +142,17 @@ def run_check(cfg: dict, state: dict) -> dict:
                     if slot_in_window(s, time_from, time_to)
                 ]
 
+                club_name = CLUBS[club]["name"]
+                if matching:
+                    logger.info(f"{club_name} on {date}: {len(matching)} slot(s) in window: {', '.join(matching)}")
+                else:
+                    logger.info(f"{club_name} on {date}: no slots in {time_from}-{time_to}")
+
                 previously_available = set(state.get(state_key, []))
                 newly_available = [s for s in matching if s not in previously_available]
 
                 if newly_available:
-                    club_name = CLUBS[club]["name"]
-                    booking_url = build_booking_url(club, date)
+                    booking_url = build_booking_url(club, date, playing_times)
                     weekday_display = weekday.capitalize()
                     date_display = datetime.strptime(date, "%Y-%m-%d").strftime("%a %b %d")
                     slots_str = ", ".join(newly_available)
@@ -176,8 +185,8 @@ def main():
     cfg = load_config(config_path)
 
     interval = cfg.get("check_interval_minutes", 5)
-    logger.info(f"Starting monitor — checking every {interval} minutes")
-    logger.info(f"Notifications → ntfy.sh topic: {cfg['ntfy_topic']}")
+    logger.info(f"Starting monitor - checking every {interval} minutes")
+    logger.info(f"Notifications -> ntfy.sh topic: {cfg['ntfy_topic']}")
     logger.info(f"Watches: {len(cfg['watches'])}")
 
     state = load_state()
@@ -185,7 +194,12 @@ def main():
     while True:
         try:
             logger.info("Running check cycle...")
-            state = run_check(cfg, state)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                try:
+                    state = run_check(cfg, state, browser=browser)
+                finally:
+                    browser.close()
             save_state(state)
             logger.info("Check cycle complete.")
         except Exception as e:
