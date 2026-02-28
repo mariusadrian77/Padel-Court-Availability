@@ -17,6 +17,7 @@ CLUBS = {
         "location": "Utrecht",
         "url_template": "{base_url}#/court-booking/reservation?location={location}&date={date}&playingTimes={playing_times}",
         "age_confirmation": True,
+        "court_type": None,
     },
     "peakz-vechtsebanen": {
         "name": "Peakz Padel Vechtsebanen",
@@ -24,6 +25,7 @@ CLUBS = {
         "location": "vechtsebanen",
         "url_template": "{base_url}/court-booking/reservation?daypart=---&date={date}&location={location}",
         "age_confirmation": False,
+        "court_type": "Double court indoor",
     },
     "peakz-zeehaenkade": {
         "name": "Peakz Padel Zeehaenkade",
@@ -31,6 +33,7 @@ CLUBS = {
         "location": "Zeehaenkade",
         "url_template": "{base_url}/court-booking/reservation?daypart=---&date={date}&location={location}",
         "age_confirmation": False,
+        "court_type": "Double court indoor",
     },
 }
 
@@ -49,6 +52,7 @@ class PadelScraper:
         self.location = config["location"]
         self.url_template = config["url_template"]
         self.age_confirmation = config["age_confirmation"]
+        self.court_type = config.get("court_type")
         self.date = date or datetime.now().strftime("%Y-%m-%d")
         self.playing_times = playing_times
         self.time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
@@ -72,6 +76,20 @@ class PadelScraper:
                 return
             except:
                 continue
+
+    def _select_court_type(self, page):
+        if not self.court_type:
+            return
+        try:
+            multiselect = page.locator(".multiselect").filter(has_text="Type baan")
+            multiselect.click()
+            page.wait_for_timeout(500)
+            option = page.locator(f".multiselect__option:has-text('{self.court_type}')")
+            option.click()
+            page.wait_for_timeout(2000)
+            print(f"Court type filter set: {self.court_type}")
+        except Exception as e:
+            print(f"Warning: could not set court type filter: {e}")
 
     def _find_time_slots(self, page):
         page.wait_for_selector(".timeslots-container", timeout=15000)
@@ -119,6 +137,8 @@ class PadelScraper:
                 self._handle_age_confirmation(page)
                 page.wait_for_load_state("domcontentloaded")
                 page.wait_for_timeout(3000)
+
+                self._select_court_type(page)
 
                 time_slots = self._find_time_slots(page)
 
@@ -179,10 +199,10 @@ def print_results(result: Dict):
     print(f"  Duration: {result['playing_times']} minutes")
     print(f"\n  Available slots ({result['total_available']}):")
     for slot in result['available_slots']:
-        print(f"    ✓ {slot}")
+        print(f"    + {slot}")
     print(f"\n  Booked slots ({result['total_booked']}):")
     for slot in result['booked_slots']:
-        print(f"    ✗ {slot}")
+        print(f"    - {slot}")
 
 
 def main():
