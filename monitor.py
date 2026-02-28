@@ -148,7 +148,7 @@ def run_check(cfg: dict, state: dict) -> dict:
                     date_display = datetime.strptime(date, "%Y-%m-%d").strftime("%a %b %d")
                     slots_str = ", ".join(newly_available)
 
-                    title = f"Padel slot opened — {club_name}"
+                    title = f"Padel slot opened - {club_name}"
                     message = (
                         f"{club_name}\n"
                         f"{weekday_display} {date_display}\n"

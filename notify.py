@@ -18,7 +18,7 @@ def send_notification(
     click_url: str = None,
 ):
     headers = {
-        "Title": title,
+        "Title": title.encode("utf-8"),
         "Priority": priority,
         "Tags": tags,
     }
